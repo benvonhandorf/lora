@@ -2,11 +2,10 @@
 #include <Wire.h>
 #include <Adafruit_INA219.h>
 #include <Adafruit_AHTX0.h>
-#include <Adafruit_BMP280.h>
+#include <Adafruit_BME280.h>
 
 /*
- * BMP280 - Temperature and Pressure - 0x76
- * AHT20 - Temperatuer and Humidity - 0x38
+ * BME280 - Temperature and Pressure - 0x76
  * INA219 - Volage and current - 0x40
  */
 
@@ -14,11 +13,11 @@
 TwoWire i2c = TwoWire(1);
 
 Adafruit_INA219 ina219;
-Adafruit_AHTX0 aht20;
 
-Adafruit_BMP280 bmp280(&i2c);
-Adafruit_Sensor *bmp280_temp = bmp280.getTemperatureSensor();
-Adafruit_Sensor *bmp280_pressure = bmp280.getPressureSensor();
+Adafruit_BME280 bme280;
+Adafruit_Sensor *bme280_temp = bme280.getTemperatureSensor();
+Adafruit_Sensor *bme280_pressure = bme280.getPressureSensor();
+Adafruit_Sensor *bme280_humidity = bme280.getHumiditySensor();
 
 #define LORA_FREQUENCY_HZ 915.5E6
 #define LORA_DESTINATION 0x01
@@ -32,8 +31,10 @@ Adafruit_Sensor *bmp280_pressure = bmp280.getPressureSensor();
 
 #define MEASUREMENT_FREQUENCY_MS 10000
 
-#define DISPLAY_MEASUREMENTS 1
-#define TRANSMIT_MEASUREMENTS 0
+#define DISPLAY_MEASUREMENTS 0
+#define TRANSMIT_MEASUREMENTS 1
+
+#define USER_BUTTON 0
 
 bool displayOn = false;
 
@@ -76,7 +77,7 @@ void sendLoRaMessage(float voltage_V, float current_mA, float humidity_PCT, floa
   sendLoRaFloat(humidity_PCT);
   sendLoRaFloat(temp_C);
   sendLoRaFloat(pressure_hPa);
-  sendLoRaFloat(temp_2_C);
+  sendLoRaFloat(temp_2_C); //Still transmitted for legacy reasons.  Will need to use a different message ID to eliminate
 
   LoRa.endPacket();
 
@@ -90,55 +91,48 @@ void displayStatus(float voltage_V, float current_mA, float humidity_PCT, float 
   Serial.print("Bus Voltage:   "); Serial.print(voltage_V); Serial.println(" V");
   Serial.print("Current:       "); Serial.print(current_mA); Serial.println(" mA");
   Serial.print("Humidity:      "); Serial.print(humidity_PCT); Serial.println("  %");
-  Serial.print("AHT20 Temp:    "); Serial.print(temp_C); Serial.println("  C");
   Serial.print("Pressure:      "); Serial.print(pressure_hPa); Serial.println("  hPa");
   Serial.print("BMP280 Temp:   "); Serial.print(temp_2_C); Serial.println("  C");
   Serial.print("Last reading:  "); Serial.println(last_reading);
   Serial.println("");
 
-#if DISPLAY_MEASUREMENTS
-
-  if(!displayOn) {
-    Heltec.display->displayOn();
-    Heltec.display->init();
-    Heltec.display->flipScreenVertically();  
-    Heltec.display->setFont(ArialMT_Plain_10);
-
-    displayOn = true;
-  } else {
+  if(displayOn) {
     Heltec.display->clear();
+
+    int y = 0;
+    
+    Heltec.display->drawString(0, y, "I:");
+    Heltec.display->drawString(15, y, String(current_mA, 2));
+    Heltec.display->drawString(45, y, "mA");
+    Heltec.display->drawString(64, y, "| V:");
+    Heltec.display->drawString(90, y, String(voltage_V, 2));
+    Heltec.display->drawString(115, y, "V");
+    
+    y += 12;
+    
+    Heltec.display->drawString(0, y, "H:");
+    Heltec.display->drawString(15, y, String(humidity_PCT, 2));
+    Heltec.display->drawString(45, y, "%");
+    Heltec.display->drawString(64, y, "| T:");
+    Heltec.display->drawString(90, y, String(temp_C, 2));
+    Heltec.display->drawString(115, y, "C");
+    
+    y += 12;
+    
+    Heltec.display->drawString(0, y, "P:");
+    Heltec.display->drawString(15, y, String(pressure_hPa, 2));
+    Heltec.display->drawString(45, y, "hPa");
+    Heltec.display->drawString(64, y, "| T:");
+    Heltec.display->drawString(90, y, String(temp_2_C, 2));
+    Heltec.display->drawString(115, y, "C");
+
+    y += 12;
+    
+    Heltec.display->drawString(0, y, "Time:");
+    Heltec.display->drawString(25, y, String(last_reading));
+    
+    Heltec.display->display();
   }
-
-  int y = 0;
-  
-  Heltec.display->drawString(0, y, "I:");
-  Heltec.display->drawString(15, y, String(current_mA, 2));
-  Heltec.display->drawString(45, y, "mA");
-  Heltec.display->drawString(64, y, "| V:");
-  Heltec.display->drawString(90, y, String(voltage_V, 2));
-  Heltec.display->drawString(115, y, "V");
-
-  y += 12;
-
-  Heltec.display->drawString(0, y, "H:");
-  Heltec.display->drawString(15, y, String(humidity_PCT, 2));
-  Heltec.display->drawString(45, y, "%");
-  Heltec.display->drawString(64, y, "| T:");
-  Heltec.display->drawString(90, y, String(temp_C, 2));
-  Heltec.display->drawString(115, y, "C");
-
-  y += 12;
-
-  Heltec.display->drawString(0, y, "P:");
-  Heltec.display->drawString(15, y, String(pressure_hPa, 2));
-  Heltec.display->drawString(45, y, "hPa");
-  Heltec.display->drawString(64, y, "| T:");
-  Heltec.display->drawString(90, y, String(temp_2_C, 2));
-  Heltec.display->drawString(115, y, "C");
-  
-  Heltec.display->display();
-
-#endif
  
 }
 
@@ -146,19 +140,41 @@ void halt() {
   while(1) delay(100);
 }
 
+void enableDisplay() {
+  Serial.println("enableDisplay()");
+  
+  if(displayOn) {
+    return;
+  }
+  
+  Heltec.display->displayOn();
+  Heltec.display->init();
+  Heltec.display->flipScreenVertically();  
+  Heltec.display->setFont(ArialMT_Plain_10);
+
+  displayOn = true;
+}
+
+void disableDisplay() {
+  Serial.println("disableDisplay()");
+  
+  Heltec.display->displayOff();
+
+  displayOn = false;
+}
+
+void toggleDisplay() {
+  if(displayOn) {
+    disableDisplay();
+  } else {
+    enableDisplay();
+  }
+}
+
 void handleError(String error){
   Serial.println(error);
   
-  if(!displayOn) {
-    Heltec.display->displayOn();
-    Heltec.display->init();
-    Heltec.display->flipScreenVertically();  
-    Heltec.display->setFont(ArialMT_Plain_10);
-
-    displayOn = true;
-  } else {
-    Heltec.display->clear();
-  }
+  enableDisplay();
   
   Heltec.display->drawString(0, 0, "Error:");
   Heltec.display->drawString(0, 12, error);
@@ -166,12 +182,18 @@ void handleError(String error){
 }
 
 void setup() {
+  pinMode(USER_BUTTON, INPUT);
+  
   //Begin with display and LoRa disabled, serial and PA boost enabled.
   Heltec.begin(false, //Display enabled
     false, //LoRa enabled
     true, //Serial enabled
     true /*PABOOST Enable*/, 
     LORA_FREQUENCY_HZ /*long BAND*/);
+
+#if DISPLAY_MEASUREMENTS
+  enableDisplay();
+#endif
 
   while(!Serial) {
     delay(10);
@@ -186,20 +208,14 @@ void setup() {
   
   ina219.setCalibration_16V_400mA();
 
-  if(!aht20.begin(&i2c)) {
-    handleError("AHT20 initialization failed");
+  if(!bme280.begin(BME280_ADDRESS_ALTERNATE, &i2c)) {
+    handleError("BME280 initialization failed: " + String(bme280.sensorID(), 16)) ;
     halt();
   }
 
-  if(!bmp280.begin(BMP280_ADDRESS_ALT, BMP280_CHIPID)) {
-    handleError("BMP280 initialization failed: " + String(bmp280.sensorID(), 16)) ;
-    halt();
-  }
-
-  Serial.println("BMP280 sensor Id: " + String(bmp280.sensorID(), 16)) ;
+  Serial.println("BME280 sensor Id: " + String(bme280.sensorID(), 16)) ;
 
   Serial.println("Initialization complete");
-
 }
 
 void sensorsOn() {
@@ -210,9 +226,20 @@ void sensorsOff() {
   ina219.powerSave(true);
 }
 
+int userButtonState = 1;
+
 void loop() {
   // put your main code here, to run repeatedly:
 
+  int newButtonState = digitalRead(USER_BUTTON);
+
+  if(newButtonState != userButtonState) {
+    if(!newButtonState) {
+      toggleDisplay();
+    }
+    
+    userButtonState = newButtonState;
+  }
 
   float shuntvoltage = 0;
   float busvoltage = 0;
@@ -226,20 +253,15 @@ void loop() {
   power_mW = ina219.getPower_mW();
   loadvoltage = busvoltage + (shuntvoltage / 1000);
   
-  sensors_event_t humidity, temp;
-  if(!aht20.getEvent(&humidity, &temp)) {
-    handleError("Error reading AHT20");
-    halt();
-  }
+  sensors_event_t bme280_temp_reading, bme280_pressure_reading, bme280_humidity_reading;
 
-  sensors_event_t bmp280_temp_reading, bmp280_pressure_reading;
+  bme280_temp->getEvent(&bme280_temp_reading);
+  bme280_pressure->getEvent(&bme280_pressure_reading);
+  bme280_humidity->getEvent(&bme280_humidity_reading);
 
-  bmp280_temp->getEvent(&bmp280_temp_reading);
-  bmp280_pressure->getEvent(&bmp280_pressure_reading);
-
-  displayStatus(busvoltage, current_mA, humidity.relative_humidity, temp.temperature, bmp280_pressure_reading.pressure, bmp280_temp_reading.temperature, humidity.timestamp);
+  displayStatus(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature, bme280_humidity_reading.timestamp);
 #if TRANSMIT_MEASUREMENTS
-  sendLoRaMessage(busvoltage, current_mA, humidity.relative_humidity, temp.temperature, bmp280_pressure_reading.pressure, bmp280_temp_reading.temperature);
+  sendLoRaMessage(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature);
 #endif
 
   delay(MEASUREMENT_FREQUENCY_MS);

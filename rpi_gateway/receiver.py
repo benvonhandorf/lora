@@ -2,8 +2,9 @@ from digitalio import DigitalInOut, Direction, Pull
 import busio
 import board
 import adafruit_rfm9x
-import time
+import datetime
 import struct
+import socket
 
 import os
 
@@ -37,41 +38,46 @@ influx_client = InfluxDBClient(url=f'http://{influx_host}:8086', token=influx_to
 influx_writer = influx_client.write_api(write_options=SYNCHRONOUS)
 
 while True:
-    data = rfm9x.receive(keep_listening = True, with_header = True)
+    try:
+        data = rfm9x.receive(keep_listening = True, with_header = True)
 
-    if data is not None:
-        lora_rssi = rfm9x.last_rssi
+        if data is not None:
+            lora_rssi = rfm9x.last_rssi
 
-        lora_destination = data[0]
-        lora_source = data[1]
-        lora_message_id = data[2]
-        lora_flags = data[3]
+            lora_destination = data[0]
+            lora_source = data[1]
+            lora_message_id = data[2]
+            lora_flags = data[3]
 
-        print(f'Received {counter} @ {rfm9x.last_rssi}: {data}')
+            print(f'{datetime.datetime.now().isoformat()} - Received {counter} @ {rfm9x.last_rssi}: {data}')
 
-        if data[2] == 0x01:
-            # Type 1 message.  Expect 6 floats
-            float_data = struct.unpack_from('6f', data, 4)
+            if data[2] == 0x01:
+                # Type 1 message.  Expect 6 floats
+                float_data = struct.unpack_from('6f', data, 4)
+                
+                print(float_data)
+
+                point = Point('reading').tag('unit', 'weather_station_1') \
+                    .field('voltage', float_data[0]) \
+                    .field('current', float_data[1]) \
+                    .field('humidity', float_data[2]) \
+                    .field('temperature', float_data[3]) \
+                    .field('pressure', float_data[4]) \
+                    .field('temperature2', float_data[5])
+
+                influx_writer.write(bucket=bucket, record=point)
+
+                lora_packet = Point('message').tag('source', lora_source) \
+                    .tag('destination', lora_destination) \
+                    .tag('receiver', lora_node_id) \
+                    .tag('message_type', lora_message_id) \
+                    .tag('flags', lora_flags) \
+                    .field('rssi', lora_rssi)
+
+                influx_writer.write(bucket='lora_signal_strength', record=lora_packet)
+            else:
+                print('Unrecognized data')
             
-            print(float_data)
-
-            point = Point('reading').tag('unit', 'weather_station_1') \
-                .field('voltage', float_data[0]) \
-                .field('current', float_data[1]) \
-                .field('humidity', float_data[2]) \
-                .field('temperature', float_data[3]) \
-                .field('pressure', float_data[4]) \
-                .field('temperature2', float_data[5])
-
-            influx_writer.write(bucket=bucket, record=point)
-
-            lora_packet = Point('message').tag('source', lora_source) \
-                .tag('destination', lora_destination) \
-                .tag('receiver', lora_node_id) \
-                .tag('message_type', lora_message_id) \
-                .tag('flags', lora_flags) \
-                .field('rssi', lora_rssi)
-
-            influx_writer.write(bucket='lora_signal_strength', record=lora_packet)
-        
-        counter += 1
+            counter += 1
+    except Exception as e:
+        print(f'Error: {type(e)}' )
