@@ -3,6 +3,7 @@
 #include <Adafruit_INA219.h>
 #include <Adafruit_AHTX0.h>
 #include <Adafruit_BME280.h>
+#include <esp_task_wdt.h>
 
 /*
  * BME280 - Temperature and Pressure - 0x76
@@ -22,14 +23,17 @@ Adafruit_Sensor *bme280_humidity = bme280.getHumiditySensor();
 #define LORA_FREQUENCY_HZ 915.5E6
 #define LORA_DESTINATION 0x01
 #define LORA_NODE 0x02
-#define LORA_MESSAGE_ID 0x01
+#define LORA_MESSAGE_ID 0x05
 #define LORA_FLAGS 0x00
 #define LORA_BANDWIDTH 125000
 #define LORA_CODING 5
 #define LORA_SF 7
 #define LORA_TX_POWER_DBM 10
 
+#define LORA_ERROR_MESSAGE_ID 0x55
+
 #define MEASUREMENT_FREQUENCY_MS 10000
+#define WATCHDOG_S 30
 
 #define DISPLAY_MEASUREMENTS 0
 #define TRANSMIT_MEASUREMENTS 1
@@ -50,6 +54,18 @@ void sendLoRaLong(long value) {
   LoRa.write(*(((uint8_t *) &value) + 1));
   LoRa.write(*(((uint8_t *) &value) + 2));
   LoRa.write(*(((uint8_t *) &value) + 3));
+}
+
+void sendLoRaString(String message, uint8_t bytes) {
+  uint8_t message_length = message.length();
+  
+  for(int i = 0 ; i < bytes; i++) {
+    if(i < message_length) {
+      LoRa.write(message[i]);
+    } else {
+      LoRa.write(0x00);
+    }
+  }
 }
 
 void sendLoRaMessage(float voltage_V, float current_mA, float humidity_PCT, float temp_C, float pressure_hPa, float temp_2_C) {
@@ -81,8 +97,34 @@ void sendLoRaMessage(float voltage_V, float current_mA, float humidity_PCT, floa
 
   LoRa.endPacket();
 
-  delay(1000);
+  LoRa.end();
+}
 
+void sendLoRaErrorMessage(String message) {
+  
+  LoRa.begin(LORA_FREQUENCY_HZ, true);
+
+  LoRa.setSyncWord(0x12);
+  LoRa.setPreambleLength(8);
+  LoRa.setSignalBandwidth(LORA_BANDWIDTH);
+  LoRa.setCodingRate4(LORA_CODING);
+  LoRa.setSpreadingFactor(LORA_SF);
+  LoRa.enableCrc();
+  LoRa.setTxPower(LORA_TX_POWER_DBM, RF_PACONFIG_PASELECT_PABOOST);
+  
+  LoRa.beginPacket();
+
+  //Header: To, From, Id, Flags
+  LoRa.write(LORA_DESTINATION);
+  LoRa.write(LORA_NODE);
+  LoRa.write(LORA_ERROR_MESSAGE_ID);
+  LoRa.write(LORA_FLAGS);
+
+  //Type 0x55 message expects 30 characters of data
+  sendLoRaString(message, 30);
+
+  LoRa.endPacket();
+  
   LoRa.end();
 }
 
@@ -137,7 +179,9 @@ void displayStatus(float voltage_V, float current_mA, float humidity_PCT, float 
 }
 
 void halt() {
-  while(1) delay(100);
+  while(true) {
+    delay(60000);
+  }
 }
 
 void enableDisplay() {
@@ -157,7 +201,7 @@ void enableDisplay() {
 
 void disableDisplay() {
   Serial.println("disableDisplay()");
-  
+
   Heltec.display->displayOff();
 
   displayOn = false;
@@ -173,6 +217,8 @@ void toggleDisplay() {
 
 void handleError(String error){
   Serial.println(error);
+
+  sendLoRaErrorMessage(error);
   
   enableDisplay();
   
@@ -183,6 +229,9 @@ void handleError(String error){
 
 void setup() {
   pinMode(USER_BUTTON, INPUT);
+
+  esp_task_wdt_init(WATCHDOG_S, true);
+  esp_task_wdt_add(NULL);
   
   //Begin with display and LoRa disabled, serial and PA boost enabled.
   Heltec.begin(false, //Display enabled
@@ -190,6 +239,10 @@ void setup() {
     true, //Serial enabled
     true /*PABOOST Enable*/, 
     LORA_FREQUENCY_HZ /*long BAND*/);
+
+  //If we're resetting due to the WDT, reset the display hardware.
+  enableDisplay();
+  disableDisplay();
 
 #if DISPLAY_MEASUREMENTS
   enableDisplay();
@@ -202,14 +255,14 @@ void setup() {
   i2c.begin(21, 22);
 
   if(!ina219.begin(&i2c)) {
-    handleError("INA219 initialization failed");
+    handleError("INA219 init failed");
     halt();
   }
   
   ina219.setCalibration_16V_400mA();
 
   if(!bme280.begin(BME280_ADDRESS_ALTERNATE, &i2c)) {
-    handleError("BME280 initialization failed: " + String(bme280.sensorID(), 16)) ;
+    handleError("BME280 init failed: " + String(bme280.sensorID(), 16)) ;
     halt();
   }
 
@@ -228,8 +281,20 @@ void sensorsOff() {
 
 int userButtonState = 1;
 
+bool evaluate_readings_are_reasonable(float voltage_V, float current_mA, float humidity_PCT, float temp_C, float pressure_hPa, float temp_2_C, long last_reading) {
+  if(voltage_V == 0.0
+    || pressure_hPa < 0.0
+    || temp_C > 120) {
+      return false;
+  } else {
+    return true;
+  }
+}
+
 void loop() {
   // put your main code here, to run repeatedly:
+
+  esp_task_wdt_reset();
 
   int newButtonState = digitalRead(USER_BUTTON);
 
@@ -259,10 +324,23 @@ void loop() {
   bme280_pressure->getEvent(&bme280_pressure_reading);
   bme280_humidity->getEvent(&bme280_humidity_reading);
 
-  displayStatus(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature, bme280_humidity_reading.timestamp);
+  if(evaluate_readings_are_reasonable(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature, bme280_humidity_reading.timestamp)) {
+
+    displayStatus(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature, bme280_humidity_reading.timestamp);
 #if TRANSMIT_MEASUREMENTS
-  sendLoRaMessage(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature);
+    sendLoRaMessage(busvoltage, current_mA, bme280_humidity_reading.relative_humidity, bme280_temp_reading.temperature, bme280_pressure_reading.pressure, bme280_temp_reading.temperature);
 #endif
+  } else {
+    //Measurements are not reasonable.  Transmit an error message and halt, relying on the wdt for reset.
+
+    String error_message = "Bad Data: " + String(busvoltage, 1) + "V " + String(bme280_temp_reading.temperature, 2) + "C " + bme280_pressure_reading.pressure +"hPa";
+
+    handleError(error_message);
+
+    halt();
+  }
+
+  
 
   delay(MEASUREMENT_FREQUENCY_MS);
 }
